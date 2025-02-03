@@ -1,168 +1,98 @@
-import streamlit as st
+import os
+import json
 import requests
-import google.generativeai as genai
-from datetime import datetime, timedelta
+import streamlit as st
 import pandas as pd
-import time
-from io import StringIO
+from datetime import datetime, timedelta
+import google.generativeai as genai
 
-# Configure Streamlit page
-st.set_page_config(page_title="AI Investment Scout", layout="wide")
-st.title("🔍 AI-Powered Investment Lead Finder")
+# --- CONFIGURATION ---
+# Replace these with your actual API keys or (better) set them as environment variables.
+SERPAPI_KEY = os.getenv("SERPAPI_KEY", "68b24d5fd2ad3ca86d86896c0a63cca3b2bdb67c63732e90c5ff87d06e805039")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBb4zXQO1XelsydxGRny-UHZN_ZznhAB0g")
 
-# Custom CSS for better styling
-st.markdown("""
-<style>
-    .reportview-container {background: #f5f5f5}
-    .stDataFrame {border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1)}
-    .stDownloadButton button {background-color: #4CAF50; color: white}
-</style>
-""", unsafe_allow_html=True)
+# Configure Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
 
-# Session state initialization
-if 'search_made' not in st.session_state:
-    st.session_state.search_made = False
+st.title("Investment Promotion Agency - Company Expansion Leads")
 
-# Sidebar configuration
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    SERPAPI_KEY = st.text_input("SerpAPI Key", type="password")
-    GEMINI_API_KEY = st.text_input("Gemini API Key", type="password")
-    st.markdown("---")
-    st.header("🛠️ Features")
-    enable_cache = st.checkbox("Enable Caching", value=True)
-    sample_mode = st.checkbox("Sample Mode (No API Needed)")
+# --- USER INPUT ---
+sector = st.text_input("Enter Sector (e.g., Automobile)", value="Automobile")
 
-# Main input section
-col1, col2 = st.columns([3, 1])
-with col1:
-    sector = st.text_input("Enter target sector:", "Automobile").strip()
-with col2:
-    st.markdown("<br>", unsafe_allow_html=True)
-    search_clicked = st.button("Find Investment Leads")
+if st.button("Search"):
+    with st.spinner("Searching for leads..."):
+        # --- STEP 1: Query SERPAPI ---
+        # Build the search query. Exclude job/career related results.
+        query = f"{sector} company expansion investment new plant setup -job -career"
 
-# Cached function for API calls
-@st.cache_data(show_spinner=False, ttl=3600 if enable_cache else 0)
-def fetch_and_process_data(_sector, serpapi_key, gemini_key):
-    # Configure Gemini
-    genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel('gemini-pro')
-    
-    # Date calculations
-    date_range = {
-        'start': (datetime.now() - timedelta(days=60)).strftime('%m/%d/%Y'),
-        'end': datetime.now().strftime('%m/%d/%Y')
-    }
-    
-    # SerpAPI call
-    params = {
-        "q": f"{_sector} company expansion investment new plant setup -job -career",
-        "hl": "en",
-        "gl": "in",
-        "api_key": serpapi_key,
-        "tbs": f"cdr:1,cd_min:{date_range['start']},cd_max:{date_range['end']}"
-    }
-    
-    response = requests.get("https://serpapi.com/search", params=params)
-    raw_data = response.json()
-    
-    # Process results
-    processed = []
-    if "organic_results" in raw_data:
-        for result in raw_data["organic_results"]:
-            # Rate limiting
-            time.sleep(1)  # Avoid API flooding
-            
+        # Calculate the date 2 months ago and the current date in MM/DD/YYYY format
+        two_months_ago = (datetime.now() - timedelta(days=60)).strftime('%m/%d/%Y')
+        current_date = datetime.now().strftime('%m/%d/%Y')
+
+        # Define SERPAPI parameters with a custom date range
+        params = {
+            "q": query,
+            "hl": "en",
+            "gl": "in",  # Change as needed.
+            "api_key": SERPAPI_KEY,
+            # Custom date range: results between two_months_ago and current_date
+            "tbs": f"cdr:1,cd_min:{two_months_ago},cd_max:{current_date}"
+        }
+
+        response = requests.get("https://serpapi.com/search", params=params)
+        data = response.json()
+
+        # Extract raw search results from SERPAPI response
+        raw_results = []
+        if "organic_results" in data:
+            for result in data["organic_results"]:
+                title = result.get("title", "No title")
+                snippet = result.get("snippet", "No summary available")
+                link = result.get("link", "No URL available")
+                raw_results.append({
+                    "title": title,
+                    "snippet": snippet,
+                    "link": link
+                })
+
+        # --- STEP 2: Refine Results Using Gemini ---
+        refined_results = []  # This will be a list of dictionaries.
+        for result in raw_results:
+            # Prepare the prompt. Instruct Gemini to return valid JSON.
+            prompt = f"""
+You are an AI assistant helping an investment promotion agency identify companies planning investments or expansions.
+Analyze the following search result and extract only the relevant information. Return your output as a valid JSON object with the following keys:
+- "company_name": The name of the company (if mentioned).
+- "investment_plan": A summary of their investment or expansion plans.
+- "source_url": The source URL.
+
+Search Result:
+Title: {result['title']}
+Summary: {result['snippet']}
+URL: {result['link']}
+
+If the result is irrelevant (e.g., job postings, unrelated news), return: {{"result": "Irrelevant"}}
+"""
             try:
-                prompt = f"""Extract investment details from:
-                Title: {result.get('title', '')}
-                Summary: {result.get('snippet', '')}
-                URL: {result.get('link', '')}
+                gemini_response = model.generate_content(prompt)
+                # Remove any extraneous whitespace
+                refined_text = gemini_response.text.strip()
 
-                Return format:
-                Company Name | Investment Plan | Source URL
-                - If irrelevant, return 'None|None|None'"""
-                
-                response = model.generate_content(prompt)
-                parts = response.text.strip().split('|')
-                
-                if len(parts) == 3 and 'None' not in parts[0]:
-                    processed.append({
-                        'Company': parts[0].strip(),
-                        'Investment Plan': parts[1].strip(),
-                        'Source URL': parts[2].strip()
-                    })
+                # Attempt to parse the JSON output
+                refined_data = json.loads(refined_text)
+                # If the response is marked as irrelevant, skip this result.
+                if refined_data.get("result", "").lower() == "irrelevant":
+                    continue
+                refined_results.append(refined_data)
             except Exception as e:
+                st.error(f"Error processing a result: {e}")
                 continue
-    
-    return processed
 
-# Sample data for demo mode
-SAMPLE_DATA = [
-    {'Company': 'Tata Motors', 
-     'Investment Plan': 'Planning $1B EV battery plant in Maharashtra by 2025',
-     'Source URL': 'https://example.com/tata-motors'},
-    {'Company': 'Reliance Chemicals',
-     'Investment Plan': 'New petrochemical complex announcement in Gujarat',
-     'Source URL': 'https://example.com/reliance-chemicals'}
-]
-
-# Main processing logic
-if search_clicked:
-    if sample_mode:
-        results = SAMPLE_DATA
-        st.session_state.search_made = True
-    else:
-        if not SERPAPI_KEY or not GEMINI_API_KEY:
-            st.error("🔑 Please provide both API keys!")
-            st.stop()
-        
-        try:
-            with st.spinner("🚀 Scanning global investment opportunities..."):
-                results = fetch_and_process_data(
-                    sector, SERPAPI_KEY, GEMINI_API_KEY
-                )
-                st.session_state.search_made = True
-        except Exception as e:
-            st.error(f"⚠️ Error: {str(e)}")
-            st.stop()
-
-    if st.session_state.search_made:
-        if results:
-            df = pd.DataFrame(results)
-            
-            # Display results
-            st.success(f"✅ Found {len(df)} investment leads in {sector}")
-            
-            # Dataframe display
-            st.dataframe(
-                df,
-                use_container_width=True,
-                column_config={
-                    "Source URL": st.column_config.LinkColumn(
-                        "Source", display_text="Open Link"
-                    )
-                },
-                hide_index=True
-            )
-            
-            # CSV Export
-            csv_buffer = StringIO()
-            df.to_csv(csv_buffer, index=False)
-            st.download_button(
-                label="📥 Export to CSV",
-                data=csv_buffer.getvalue(),
-                file_name=f"{sector}_investment_leads.csv",
-                mime="text/csv"
-            )
+        # --- STEP 3: Display the Results ---
+        if refined_results:
+            df = pd.DataFrame(refined_results)
+            st.success(f"Found {len(df)} relevant lead(s):")
+            st.table(df)
         else:
-            st.warning("🤷 No relevant investment leads found")
-
-# Add footer
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #666;">
-    <p>Powered by SerpAPI, Google Gemini, and Streamlit</p>
-    <p>Note: Results are based on publicly available web data</p>
-</div>
-""", unsafe_allow_html=True)
+            st.info("No relevant leads found.")
