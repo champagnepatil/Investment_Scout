@@ -8,8 +8,11 @@ import google.generativeai as genai
 
 # --- CONFIGURATION ---
 # Replace these with your actual API keys or (better) set them as environment variables.
-SERPAPI_KEY = os.getenv("SERPAPI_KEY", "68b24d5fd2ad3ca86d86896c0a63cca3b2bdb67c63732e90c5ff87d06e805039")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBb4zXQO1XelsydxGRny-UHZN_ZznhAB0g")
+os.environ['GOOGLE_API_KEY'] = st.secrets['GOOGLE_API_KEY']
+os.environ['SERPAPI_KEY'] = st.secrets['SERPAPI_KEY']
+
+#SERPAPI_KEY = os.getenv("SERPAPI_KEY", "68b24d5fd2ad3ca86d86896c0a63cca3b2bdb67c63732e90c5ff87d06e805039")
+#GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBb4zXQO1XelsydxGRny-UHZN_ZznhAB0g")
 
 # Configure Gemini
 genai.configure(api_key=GEMINI_API_KEY)
