@@ -92,10 +92,13 @@ If the result is irrelevant (e.g., job postings, unrelated news), return: {{"res
                 st.error(f"Error processing a result: {e}")
                 continue
 
-        # --- STEP 3: Display the Results ---
+    
+            # --- STEP 3: Display the Results ---
         if refined_results:
             df = pd.DataFrame(refined_results)
             st.success(f"Found {len(df)} relevant lead(s):")
-            st.table(df)
+               # Convert all columns to string to avoid pyarrow conversion issues.
+            st.table(df.astype(str))
         else:
             st.info("No relevant leads found.")
+
