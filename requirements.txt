@@ -1,0 +1,8 @@
+langchain
+langchain-openai
+langchain-google-genai
+streamlit
+streamlit-chat
+requests
+pandas
+time
