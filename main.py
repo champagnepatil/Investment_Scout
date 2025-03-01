@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import requests
 import json
@@ -21,33 +22,16 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    .main {
-        padding: 2rem;
-    }
-    .stButton button {
-        width: 100%;
-    }
-    .result-card {
-        padding: 1.5rem;
-        border-radius: 0.5rem;
-        margin-bottom: 1rem;
-        border: 1px solid #ddd;
-    }
-    .company-name {
-        font-size: 1.2rem;
-        font-weight: bold;
-    }
-    .source-link {
-        font-style: italic;
-        font-size: 0.9rem;
-    }
+    .main { padding: 2rem; }
+    .stButton button { width: 100%; }
+    .result-card { padding: 1.5rem; border-radius: 0.5rem; margin-bottom: 1rem; border: 1px solid #ddd; }
+    .company-name { font-size: 1.2rem; font-weight: bold; }
+    .source-link { font-style: italic; font-size: 0.9rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# App title and description
 st.title("Investment Leads Identifier")
 st.subheader("Find companies planning expansion or investments in your target sector")
-
 st.markdown("""
 This tool helps identify potential investment leads by:
 1. Searching for recent news about company expansions in your sector
@@ -77,19 +61,17 @@ def get_search_results(sector, date_range=None):
             "q": search_query,
             "api_key": serpapi_key,
             "tbs": "qdr:m2",  # Last 2 months
-            "num": 10  # Number of results
+            "num": 5  # Reduced number of results
         }
         
         with st.spinner("Searching for relevant company news..."):
             response = requests.get("https://serpapi.com/search", params=params)
-            
             if response.status_code != 200:
                 st.error(f"Error querying SerpAPI: {response.status_code}")
                 logger.error(f"SerpAPI error: {response.text}")
                 return None
             
             results = response.json()
-            
             if "organic_results" not in results:
                 st.warning("No results found. Try a different sector or broader search terms.")
                 return []
@@ -101,55 +83,53 @@ def get_search_results(sector, date_range=None):
         logger.exception("Error in get_search_results")
         return None
 
-# Function to process results using Gemini
-def process_with_gemini(result, sector):
-    try:
-        gemini_key = os.environ.get("GEMINI_API_KEY")
-        if not gemini_key:
-            st.error("Gemini API key not found. Please set the GEMINI_API_KEY environment variable.")
-            return None
-        
-        # Configure Gemini API
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel('gemini-1.5-pro')
-        
-        # Extract title and snippet from the search result
-        title = result.get("title", "")
-        snippet = result.get("snippet", "")
-        link = result.get("link", "")
-        
-        # Construct prompt for Gemini
-        prompt = f"""
-        Review this search result about potential company expansion or investment in the {sector} sector:
-        
-        Title: {title}
-        Snippet: {snippet}
-        Link: {link}
-        
-        Extract the following information:
-        1. Company name (if mentioned)
-        2. Summary of the company's investment or expansion plans
-        3. The source URL
-        
-        If this result is about job postings, career opportunities, or is unrelated to company expansion/investment, return exactly: {{"result": "Irrelevant"}}
-        
-        Otherwise, return a JSON with this structure:
-        {{
-            "company_name": "Name of the company",
-            "investment_summary": "Brief summary of the expansion or investment plans",
-            "source_url": "{link}"
-        }}
-        
-        Only return the JSON, without any additional text or explanation.
-        """
-        
-        # Generate response from Gemini
-        response = model.generate_content(prompt)
-        response_text = response.text
-        
-        # Try to parse JSON from the response
+# Function to process results using Gemini with exponential backoff
+def process_with_gemini(result, sector, max_retries=3):
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
+        st.error("Gemini API key not found. Please set the GEMINI_API_KEY environment variable.")
+        return None
+
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel('gemini-1.5-pro')
+    
+    title = result.get("title", "")
+    snippet = result.get("snippet", "")
+    link = result.get("link", "")
+    
+    prompt = f"""
+    Review this search result about potential company expansion or investment in the {sector} sector:
+    
+    Title: {title}
+    Snippet: {snippet}
+    Link: {link}
+    
+    Extract the following information:
+    1. Company name (if mentioned)
+    2. Summary of the company's investment or expansion plans
+    3. The source URL
+    
+    If this result is about job postings, career opportunities, or is unrelated to company expansion/investment, return exactly: {{"result": "Irrelevant"}}
+    
+    Otherwise, return a JSON with this structure:
+    {{
+        "company_name": "Name of the company",
+        "investment_summary": "Brief summary of the expansion or investment plans",
+        "source_url": "{link}"
+    }}
+    
+    Only return the JSON, without any additional text or explanation.
+    """
+    
+    retry_count = 0
+    retry_delay = 2  # Start with a 2-second delay
+    
+    while retry_count < max_retries:
         try:
-            # Remove any markdown code block formatting if present
+            response = model.generate_content(prompt)
+            response_text = response.text
+            
+            # Remove markdown formatting if present
             if "```json" in response_text:
                 response_text = response_text.split("```json")[1].split("```")[0].strip()
             elif "```" in response_text:
@@ -157,15 +137,19 @@ def process_with_gemini(result, sector):
             
             parsed_response = json.loads(response_text)
             return parsed_response
-        except json.JSONDecodeError as e:
-            st.warning(f"Failed to parse Gemini response for {title}. Skipping this result.")
-            logger.error(f"JSON parse error: {str(e)} for response: {response_text}")
-            return None
-            
-    except Exception as e:
-        st.error(f"Error processing results with Gemini: {str(e)}")
-        logger.exception("Error in process_with_gemini")
-        return None
+        
+        except Exception as e:
+            if "429" in str(e) and retry_count < max_retries - 1:
+                st.warning(f"Rate limit hit, retrying in {retry_delay} seconds...")
+                logger.warning(f"Retry {retry_count+1} due to error: {str(e)}")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+                retry_count += 1
+            else:
+                st.error(f"Error processing result with Gemini: {str(e)}")
+                logger.exception("Error in process_with_gemini")
+                return None
+    return None
 
 def main():
     # Sidebar for inputs
@@ -193,7 +177,6 @@ def main():
         
         search_button = st.button("Search for Leads")
     
-    # Main content area
     if search_button:
         if not sector:
             st.error("Please enter an industry or sector")
@@ -201,24 +184,22 @@ def main():
         
         # Step 1: Get search results
         results = get_search_results(sector, date_range)
-        
         if not results:
             return
         
         # Step 2 & 3: Process results with Gemini
         processed_results = []
-        
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         for i, result in enumerate(results):
             status_text.text(f"Processing result {i+1} of {len(results)}...")
             processed_result = process_with_gemini(result, sector)
-            
             if processed_result and processed_result.get("result") != "Irrelevant":
                 processed_results.append(processed_result)
             
             progress_bar.progress((i + 1) / len(results))
+            time.sleep(2)  # Delay between each API call
         
         progress_bar.empty()
         status_text.empty()
@@ -239,8 +220,6 @@ def main():
             
             if results_df:
                 st.table(results_df)
-                
-                # Download option
                 st.download_button(
                     label="Download Results as CSV",
                     data="\n".join([
