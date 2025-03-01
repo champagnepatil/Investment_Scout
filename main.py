@@ -97,30 +97,33 @@ def process_with_gemini(result, sector, max_retries=3):
     snippet = result.get("snippet", "")
     link = result.get("link", "")
     
+    
     prompt = f"""
     You are an AI assistant working for an investment promotion agency in Maharashtra. Your task is to analyze Google search results
-    and extract relevant information about top companies in the specified sector. Review this search result about potential company expansion or investment in the {sector} sector:
-    
+    and extract relevant information about top companies in the specified sector. 
+    Review this search result about potential company expansion or investment in the {sector} sector:
+
     Title: {title}
     Snippet: {snippet}
     Link: {link}
-    
+
     Extract the following information:
     1. Company name (if mentioned)
-    2. Summary of the company's investment or expansion plans
+    2. Summary of the company's investment or expansion plans, including any details on the investment location.
     3. The source URL
-    
-    If this result is about job postings, career opportunities, or is unrelated to company expansion/investment, return exactly: {{"result": "Irrelevant"}}
-    
-    Otherwise, return a JSON with this structure:
+
+    **Important:**
+    - If the result indicates that the investment is taking place in India or in competitor markets (for example, Bangladesh, China, Taiwan, or other regions where India is actively competing), then return a JSON with the following structure:
     {{
         "company_name": "Name of the company",
-        "investment_summary": "Brief summary of the expansion or investment plans",
+        "investment_summary": "Brief summary of the expansion or investment plans, including the location if mentioned",
         "source_url": "{link}"
     }}
-    
+    - If the result solely indicates investments in non-strategic regions (for example, investments only in the UK, USA, or other geographies not relevant to your competitive focus), return exactly: {{"result": "Irrelevant"}}.
+
     Only return the JSON, without any additional text or explanation.
     """
+
     
     retry_count = 0
     retry_delay = 2  # Start with a 2-second delay
