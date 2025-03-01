@@ -1,92 +1,259 @@
-import os
-import json
-import requests
 import streamlit as st
-from datetime import datetime, timedelta
+import requests
+import json
+import os
+import datetime
 import google.generativeai as genai
+from datetime import datetime, timedelta
+import logging
 
-# --- CONFIGURATION ---
-# Replace these with your actual API keys or set them as environment variables.
-SERPAPI_KEY = os.getenv("SERPAPI_KEY", "68b24d5fd2ad3ca86d86896c0a63cca3b2bdb67c63732e90c5ff87d06e805039")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBb4zXQO1XelsydxGRny-UHZN_ZznhAB0g")
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Configure Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+# Configure page
+st.set_page_config(
+    page_title="Investment Leads Identifier",
+    page_icon="💼",
+    layout="wide"
+)
 
-st.title("Investment Promotion Agency - Company Expansion Leads")
+# Custom CSS
+st.markdown("""
+<style>
+    .main {
+        padding: 2rem;
+    }
+    .stButton button {
+        width: 100%;
+    }
+    .result-card {
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+        border: 1px solid #ddd;
+    }
+    .company-name {
+        font-size: 1.2rem;
+        font-weight: bold;
+    }
+    .source-link {
+        font-style: italic;
+        font-size: 0.9rem;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# --- USER INPUT ---
-sector = st.text_input("Enter Sector (e.g., Automobile)", value="Automobile")
+# App title and description
+st.title("Investment Leads Identifier")
+st.subheader("Find companies planning expansion or investments in your target sector")
 
-if st.button("Search"):
-    with st.spinner("Searching for leads..."):
-        # --- STEP 1: Query SERPAPI ---
-        query = f"{sector} company expansion investment new plant setup -job -career"
+st.markdown("""
+This tool helps identify potential investment leads by:
+1. Searching for recent news about company expansions in your sector
+2. Processing the results to extract relevant information
+3. Presenting a curated list of potential investment opportunities
+""")
 
-        # Calculate the date 2 months ago and the current date in MM/DD/YYYY format
-        two_months_ago = (datetime.now() - timedelta(days=60)).strftime('%m/%d/%Y')
-        current_date = datetime.now().strftime('%m/%d/%Y')
-
-        # Define SERPAPI parameters with a custom date range
+# Function to get search results from SerpAPI
+def get_search_results(sector, date_range=None):
+    try:
+        serpapi_key = os.environ.get("SERPAPI_API_KEY")
+        if not serpapi_key:
+            st.error("SerpAPI key not found. Please set the SERPAPI_API_KEY environment variable.")
+            return None
+        
+        # Calculate date range if not provided
+        if not date_range:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=60)
+            date_range = f"{start_date.strftime('%m/%d/%Y')} - {end_date.strftime('%m/%d/%Y')}"
+        
+        # Construct search query
+        search_query = f"{sector} company expansion investment new plant setup -job -career -vacancy"
+        
         params = {
-            "q": query,
-            "hl": "en",
-            "gl": "in",  # Adjust the country code as needed.
-            "api_key": SERPAPI_KEY,
-            "tbs": f"cdr:1,cd_min:{two_months_ago},cd_max:{current_date}"
+            "engine": "google",
+            "q": search_query,
+            "api_key": serpapi_key,
+            "tbs": "qdr:m2",  # Last 2 months
+            "num": 10  # Number of results
         }
+        
+        with st.spinner("Searching for relevant company news..."):
+            response = requests.get("https://serpapi.com/search", params=params)
+            
+            if response.status_code != 200:
+                st.error(f"Error querying SerpAPI: {response.status_code}")
+                logger.error(f"SerpAPI error: {response.text}")
+                return None
+            
+            results = response.json()
+            
+            if "organic_results" not in results:
+                st.warning("No results found. Try a different sector or broader search terms.")
+                return []
+            
+            return results["organic_results"]
+            
+    except Exception as e:
+        st.error(f"Error occurred while fetching search results: {str(e)}")
+        logger.exception("Error in get_search_results")
+        return None
 
-        response = requests.get("https://serpapi.com/search", params=params)
-        data = response.json()
+# Function to process results using Gemini
+def process_with_gemini(result, sector):
+    try:
+        gemini_key = os.environ.get("GEMINI_API_KEY")
+        if not gemini_key:
+            st.error("Gemini API key not found. Please set the GEMINI_API_KEY environment variable.")
+            return None
+        
+        # Configure Gemini API
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # Extract title and snippet from the search result
+        title = result.get("title", "")
+        snippet = result.get("snippet", "")
+        link = result.get("link", "")
+        
+        # Construct prompt for Gemini
+        prompt = f"""
+        Review this search result about potential company expansion or investment in the {sector} sector:
+        
+        Title: {title}
+        Snippet: {snippet}
+        Link: {link}
+        
+        Extract the following information:
+        1. Company name (if mentioned)
+        2. Summary of the company's investment or expansion plans
+        3. The source URL
+        
+        If this result is about job postings, career opportunities, or is unrelated to company expansion/investment, return exactly: {{"result": "Irrelevant"}}
+        
+        Otherwise, return a JSON with this structure:
+        {{
+            "company_name": "Name of the company",
+            "investment_summary": "Brief summary of the expansion or investment plans",
+            "source_url": "{link}"
+        }}
+        
+        Only return the JSON, without any additional text or explanation.
+        """
+        
+        # Generate response from Gemini
+        response = model.generate_content(prompt)
+        response_text = response.text
+        
+        # Try to parse JSON from the response
+        try:
+            # Remove any markdown code block formatting if present
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            parsed_response = json.loads(response_text)
+            return parsed_response
+        except json.JSONDecodeError as e:
+            st.warning(f"Failed to parse Gemini response for {title}. Skipping this result.")
+            logger.error(f"JSON parse error: {str(e)} for response: {response_text}")
+            return None
+            
+    except Exception as e:
+        st.error(f"Error processing results with Gemini: {str(e)}")
+        logger.exception("Error in process_with_gemini")
+        return None
 
-        # Extract raw search results
-        raw_results = []
-        if "organic_results" in data:
-            for result in data["organic_results"]:
-                title = result.get("title", "No title")
-                snippet = result.get("snippet", "No summary available")
-                link = result.get("link", "No URL available")
-                raw_results.append({
-                    "title": title,
-                    "snippet": snippet,
-                    "link": link
-                })
-
-        # --- STEP 2: Refine Results Using Gemini ---
-        refined_results = []  # List to hold the refined JSON results.
-        for result in raw_results:
-            prompt = f"""
-You are an AI assistant helping an investment promotion agency identify companies planning investments or expansions.
-Analyze the following search result and extract only the relevant information. Return your output as a valid JSON object with the following keys:
-- "company_name": The name of the company (if mentioned).
-- "investment_plan": A summary of their investment or expansion plans.
-- "source_url": The source URL.
-
-Search Result:
-Title: {result['title']}
-Summary: {result['snippet']}
-URL: {result['link']}
-
-If the result is irrelevant (e.g., job postings, unrelated news), return: {{"result": "Irrelevant"}}
-"""
-            try:
-                gemini_response = model.generate_content(prompt)
-                refined_text = gemini_response.text.strip()
-                refined_data = json.loads(refined_text)
-                # Skip if marked as irrelevant
-                if refined_data.get("result", "").lower() == "irrelevant":
-                    continue
-                refined_results.append(refined_data)
-            except Exception as e:
-                st.error(f"Error processing a result: {e}")
-                continue
-
-        # --- STEP 3: Display the Results As-Is ---
-        if refined_results:
-            st.success(f"Found {len(refined_results)} relevant lead(s):")
-            for i, result in enumerate(refined_results, 1):
-                st.write(f"**Lead {i}:**")
-                st.json(result)
+def main():
+    # Sidebar for inputs
+    with st.sidebar:
+        st.header("Search Parameters")
+        sector = st.text_input("Enter Industry/Sector", "Automobile")
+        
+        st.subheader("Advanced Options")
+        use_custom_date = st.checkbox("Use custom date range", False)
+        
+        if use_custom_date:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=60)
+            
+            start_date = st.date_input("Start date", start_date)
+            end_date = st.date_input("End date", end_date)
+            
+            if start_date > end_date:
+                st.error("Start date must be before end date")
+                return
+            
+            date_range = f"{start_date.strftime('%m/%d/%Y')} - {end_date.strftime('%m/%d/%Y')}"
         else:
-            st.info("No relevant leads found.")
+            date_range = None
+        
+        search_button = st.button("Search for Leads")
+    
+    # Main content area
+    if search_button:
+        if not sector:
+            st.error("Please enter an industry or sector")
+            return
+        
+        # Step 1: Get search results
+        results = get_search_results(sector, date_range)
+        
+        if not results:
+            return
+        
+        # Step 2 & 3: Process results with Gemini
+        processed_results = []
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, result in enumerate(results):
+            status_text.text(f"Processing result {i+1} of {len(results)}...")
+            processed_result = process_with_gemini(result, sector)
+            
+            if processed_result and processed_result.get("result") != "Irrelevant":
+                processed_results.append(processed_result)
+            
+            progress_bar.progress((i + 1) / len(results))
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Step 4: Display results
+        if processed_results:
+            st.subheader(f"Investment Leads in {sector} Sector")
+            st.write(f"Found {len(processed_results)} potential leads")
+            
+            results_df = []
+            for result in processed_results:
+                if "company_name" in result and "investment_summary" in result:
+                    results_df.append({
+                        "Company": result.get("company_name", "Unknown"),
+                        "Investment Plans": result.get("investment_summary", ""),
+                        "Source": f"[Link]({result.get('source_url', '')})"
+                    })
+            
+            if results_df:
+                st.table(results_df)
+                
+                # Download option
+                st.download_button(
+                    label="Download Results as CSV",
+                    data="\n".join([
+                        "Company,Investment Plans,Source",
+                        *[f'"{r["Company"]}","{r["Investment Plans"]}","{r["Source"]}"' for r in results_df]
+                    ]),
+                    file_name=f"{sector}_investment_leads_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning("No leads were found after filtering. Try broadening your search criteria.")
+        else:
+            st.warning("No relevant investment leads found. Try a different sector or broaden your search terms.")
+
+if __name__ == "__main__":
+    main()
