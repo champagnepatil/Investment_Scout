@@ -98,7 +98,8 @@ def process_with_gemini(result, sector, max_retries=3):
     link = result.get("link", "")
     
     prompt = f"""
-    Review this search result about potential company expansion or investment in the {sector} sector:
+    You are an AI assistant working for an investment promotion agency in Maharashtra. Your task is to analyze Google search results
+    and extract relevant information about top companies in the specified sector. Review this search result about potential company expansion or investment in the {sector} sector:
     
     Title: {title}
     Snippet: {snippet}
