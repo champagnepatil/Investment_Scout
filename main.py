@@ -111,7 +111,7 @@ def process_with_gemini(result, sector):
         
         # Configure Gemini API
         genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-1.5-pro')
         
         # Extract title and snippet from the search result
         title = result.get("title", "")
