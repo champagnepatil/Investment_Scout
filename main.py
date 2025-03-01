@@ -99,10 +99,17 @@ def process_with_gemini(result, sector, max_retries=3):
     
     
     prompt = f"""
-    You are an AI assistant working for an investment promotion agency in Maharashtra. Your task is to analyze Google search results
-    and extract relevant information about top companies in the specified sector. 
-    Review this search result about potential company expansion or investment in the {sector} sector:
+    Role: You are an AI assistant for an investment promotion agency. Your task is to identify companies planning expansions, investments, or new facilities anywhere in the world so the agency can pitch Maharashtra as a destination.
 
+        Instructions:
+        1. Analyze the search result below.
+        2. Extract details only if the result hints at future investments, expansions, or new facilities.
+        3. Ignore results about:
+           - Job postings, careers, or hiring.
+           - Stock prices, dividends, or financial earnings.
+           - Past investments (older than 2 months).
+           - General industry news without specific company plans.
+    Input:
     Title: {title}
     Snippet: {snippet}
     Link: {link}
@@ -112,15 +119,7 @@ def process_with_gemini(result, sector, max_retries=3):
     2. Summary of the company's investment or expansion plans, including any details on the investment location.
     3. The source URL
 
-    **Important:**
-    - If the result indicates that the investment is taking place in India or in competitor markets (for example, Bangladesh, China, Taiwan, or other regions where India is actively competing), then return a JSON with the following structure:
-    {{
-        "company_name": "Name of the company",
-        "investment_summary": "Brief summary of the expansion or investment plans, including the location if mentioned",
-        "source_url": "{link}"
-    }}
-    - If the result solely indicates investments in non-strategic regions (for example, investments only in the UK, USA, or other geographies not relevant to your competitive focus), return exactly: {{"result": "Irrelevant"}}.
-
+    
     Only return the JSON, without any additional text or explanation.
     """
 
